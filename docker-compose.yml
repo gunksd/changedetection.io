@@ -13,9 +13,6 @@ services:
   #      - PORT=5000
       environment:
         - PLAYWRIGHT_DRIVER_URL=ws://browser-sockpuppet-chrome:3000
-        - PLAYWRIGHT_PROXY_SERVER=http://brd.superproxy.io:33335
-        - PLAYWRIGHT_PROXY_USERNAME=brd-customer-hl_497b58ff-zone-web_unlocker1
-        - PLAYWRIGHT_PROXY_PASSWORD=3c2s1w6tqeex
         - LISTEN_HOST=0.0.0.0
       ports:
         - 5050:5000
