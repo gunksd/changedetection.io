@@ -22,7 +22,6 @@ services:
       image: dgtlmoon/sockpuppetbrowser:latest
       cap_add:
         - SYS_ADMIN
-      restart: unless-stopped
       environment:
         - SCREEN_WIDTH=1920
         - SCREEN_HEIGHT=1080
