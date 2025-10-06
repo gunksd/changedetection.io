@@ -25,6 +25,7 @@ services:
       image: dgtlmoon/sockpuppetbrowser:latest
       cap_add:
         - SYS_ADMIN
+      shm_size: "1gb"
       environment:
         - SCREEN_WIDTH=1920
         - SCREEN_HEIGHT=1080
