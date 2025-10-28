@@ -1,14 +1,15 @@
 from blinker import signal
 
 from changedetectionio.strtobool import strtobool
-from changedetectionio.safe_jinja import render as jinja_render
+from changedetectionio.jinja2_custom import render as jinja_render
 from . import watch_base
 import os
 import re
 from pathlib import Path
 from loguru import logger
 
-from .. import safe_jinja
+from .. import jinja2_custom as safe_jinja
+from ..diff import ADDED_PLACEMARKER_OPEN
 from ..html_tools import TRANSLATE_WHITESPACE_TABLE
 
 # Allowable protocols, protects against javascript: etc
@@ -89,9 +90,8 @@ class model(watch_base):
                 ready_url = jinja_render(template_str=url)
             except Exception as e:
                 logger.critical(f"Invalid URL template for: '{url}' - {str(e)}")
-                from flask import (
-                    flash, Markup, url_for
-                )
+                from flask import flash, url_for
+                from markupsafe import Markup
                 message = Markup('<a href="{}#general">The URL {} is invalid and cannot be used, click to edit</a>'.format(
                     url_for('ui.ui_edit.edit_page', uuid=self.get('uuid')), self.get('url', '')))
                 flash(message, 'error')

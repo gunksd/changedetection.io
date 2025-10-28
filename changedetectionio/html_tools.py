@@ -1,5 +1,4 @@
 from loguru import logger
-from lxml import etree
 from typing import List
 import html
 import json
@@ -58,12 +57,16 @@ def include_filters(include_filters, html_content, append_pretty_line_formatting
 
     return html_block
 
-def subtractive_css_selector(css_selector, html_content):
+def subtractive_css_selector(css_selector, content):
     from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html_content, "html.parser")
+    soup = BeautifulSoup(content, "html.parser")
 
     # So that the elements dont shift their index, build a list of elements here which will be pointers to their place in the DOM
     elements_to_remove = soup.select(css_selector)
+
+    if not elements_to_remove:
+        # Better to return the original that rebuild with BeautifulSoup
+        return content
 
     # Then, remove them in a separate loop
     for item in elements_to_remove:
@@ -72,6 +75,7 @@ def subtractive_css_selector(css_selector, html_content):
     return str(soup)
 
 def subtractive_xpath_selector(selectors: List[str], html_content: str) -> str:
+    from lxml import etree
     # Parse the HTML content using lxml
     html_tree = etree.HTML(html_content)
 
@@ -82,6 +86,10 @@ def subtractive_xpath_selector(selectors: List[str], html_content: str) -> str:
     for selector in selectors:
         # Collect elements for each selector
         elements_to_remove.extend(html_tree.xpath(selector))
+
+    # If no elements were found, return the original HTML content
+    if not elements_to_remove:
+        return html_content
 
     # Then, remove them in a separate loop
     for element in elements_to_remove:
@@ -100,7 +108,7 @@ def element_removal(selectors: List[str], html_content):
     xpath_selectors = []
 
     for selector in selectors:
-        if selector.startswith(('xpath:', 'xpath1:', '//')):
+        if selector.strip().startswith(('xpath:', 'xpath1:', '//')):
             # Handle XPath selectors separately
             xpath_selector = selector.removeprefix('xpath:').removeprefix('xpath1:')
             xpath_selectors.append(xpath_selector)
@@ -177,8 +185,21 @@ def xpath_filter(xpath_filter, html_content, append_pretty_line_formatting=False
     tree = html.fromstring(bytes(html_content, encoding='utf-8'), parser=parser)
     html_block = ""
 
-    r = elementpath.select(tree, xpath_filter.strip(), namespaces={'re': 'http://exslt.org/regular-expressions'}, parser=XPath3Parser)
-    #@note: //title/text() wont work where <title>CDATA..
+    # Build namespace map for XPath queries
+    namespaces = {'re': 'http://exslt.org/regular-expressions'}
+
+    # Handle default namespace in documents (common in RSS/Atom feeds, but can occur in any XML)
+    # XPath spec: unprefixed element names have no namespace, not the default namespace
+    # Solution: Register the default namespace with empty string prefix in elementpath
+    # This is primarily for RSS/Atom feeds but works for any XML with default namespace
+    if hasattr(tree, 'nsmap') and tree.nsmap and None in tree.nsmap:
+        # Register the default namespace with empty string prefix for elementpath
+        # This allows //title to match elements in the default namespace
+        namespaces[''] = tree.nsmap[None]
+
+    r = elementpath.select(tree, xpath_filter.strip(), namespaces=namespaces, parser=XPath3Parser)
+    #@note: //title/text() now works with default namespaces (fixed by registering '' prefix)
+    #@note: //title/text() wont work where <title>CDATA.. (use cdata_in_document_to_text first)
 
     if type(r) != list:
         r = [r]
@@ -213,8 +234,19 @@ def xpath1_filter(xpath_filter, html_content, append_pretty_line_formatting=Fals
     tree = html.fromstring(bytes(html_content, encoding='utf-8'), parser=parser)
     html_block = ""
 
-    r = tree.xpath(xpath_filter.strip(), namespaces={'re': 'http://exslt.org/regular-expressions'})
-    #@note: //title/text() wont work where <title>CDATA..
+    # Build namespace map for XPath queries
+    namespaces = {'re': 'http://exslt.org/regular-expressions'}
+
+    # NOTE: lxml's native xpath() does NOT support empty string prefix for default namespace
+    # For documents with default namespace (RSS/Atom feeds), users must use:
+    #   - local-name(): //*[local-name()='title']/text()
+    #   - Or use xpath_filter (not xpath1_filter) which supports default namespaces
+    # XPath spec: unprefixed element names have no namespace, not the default namespace
+
+    r = tree.xpath(xpath_filter.strip(), namespaces=namespaces)
+    #@note: xpath1 (lxml) does NOT automatically handle default namespaces
+    #@note: Use //*[local-name()='element'] or switch to xpath_filter for default namespace support
+    #@note: //title/text() wont work where <title>CDATA.. (use cdata_in_document_to_text first)
 
     for element in r:
         # When there's more than 1 match, then add the suffix to separate each line
@@ -295,70 +327,92 @@ def _get_stripped_text_from_json_match(match):
 
     return stripped_text_from_html
 
+def extract_json_blob_from_html(content, ensure_is_ldjson_info_type, json_filter):
+    from bs4 import BeautifulSoup
+    stripped_text_from_html = ''
+
+    # Foreach <script json></script> blob.. just return the first that matches json_filter
+    # As a last resort, try to parse the whole <body>
+    soup = BeautifulSoup(content, 'html.parser')
+
+    if ensure_is_ldjson_info_type:
+        bs_result = soup.find_all('script', {"type": "application/ld+json"})
+    else:
+        bs_result = soup.find_all('script')
+    bs_result += soup.find_all('body')
+
+    bs_jsons = []
+
+    for result in bs_result:
+        # result.text is how bs4 magically strips JSON from the body
+        content_start = result.text.lstrip("\ufeff").strip()[:100] if result.text else ''
+        # Skip empty tags, and things that dont even look like JSON
+        if not result.text or not (content_start[0] == '{' or content_start[0] == '['):
+            continue
+        try:
+            json_data = json.loads(result.text)
+            bs_jsons.append(json_data)
+        except json.JSONDecodeError:
+            # Skip objects which cannot be parsed
+            continue
+
+    if not bs_jsons:
+        raise JSONNotFound("No parsable JSON found in this document")
+
+    for json_data in bs_jsons:
+        stripped_text_from_html = _parse_json(json_data, json_filter)
+
+        if ensure_is_ldjson_info_type:
+            # Could sometimes be list, string or something else random
+            if isinstance(json_data, dict):
+                # If it has LD JSON 'key' @type, and @type is 'product', and something was found for the search
+                # (Some sites have multiple of the same ld+json @type='product', but some have the review part, some have the 'price' part)
+                # @type could also be a list although non-standard ("@type": ["Product", "SubType"],)
+                # LD_JSON auto-extract also requires some content PLUS the ldjson to be present
+                # 1833 - could be either str or dict, should not be anything else
+
+                t = json_data.get('@type')
+                if t and stripped_text_from_html:
+
+                    if isinstance(t, str) and t.lower() == ensure_is_ldjson_info_type.lower():
+                        break
+                    # The non-standard part, some have a list
+                    elif isinstance(t, list):
+                        if ensure_is_ldjson_info_type.lower() in [x.lower().strip() for x in t]:
+                            break
+
+        elif stripped_text_from_html:
+            break
+
+    return stripped_text_from_html
+
 # content - json
 # json_filter - ie json:$..price
 # ensure_is_ldjson_info_type - str "product", optional, "@type == product" (I dont know how to do that as a json selector)
 def extract_json_as_string(content, json_filter, ensure_is_ldjson_info_type=None):
-    from bs4 import BeautifulSoup
 
     stripped_text_from_html = False
 # https://github.com/dgtlmoon/changedetection.io/pull/2041#issuecomment-1848397161w
     # Try to parse/filter out the JSON, if we get some parser error, then maybe it's embedded within HTML tags
-    try:
-        # .lstrip("\ufeff") strings ByteOrderMark from UTF8 and still lets the UTF work
-        stripped_text_from_html = _parse_json(json.loads(content.lstrip("\ufeff") ), json_filter)
-    except json.JSONDecodeError as e:
-        logger.warning(str(e))
 
-        # Foreach <script json></script> blob.. just return the first that matches json_filter
-        # As a last resort, try to parse the whole <body>
-        soup = BeautifulSoup(content, 'html.parser')
+    # Looks like clean JSON, dont bother extracting from HTML
 
-        if ensure_is_ldjson_info_type:
-            bs_result = soup.find_all('script', {"type": "application/ld+json"})
-        else:
-            bs_result = soup.find_all('script')
-        bs_result += soup.find_all('body')
+    content_start = content.lstrip("\ufeff").strip()[:100]
 
-        bs_jsons = []
-        for result in bs_result:
-            # Skip empty tags, and things that dont even look like JSON
-            if not result.text or '{' not in result.text:
-                continue
-            try:
-                json_data = json.loads(result.text)
-                bs_jsons.append(json_data)
-            except json.JSONDecodeError:
-                # Skip objects which cannot be parsed
-                continue
-
-        if not bs_jsons:
-            raise JSONNotFound("No parsable JSON found in this document")
-        
-        for json_data in bs_jsons:
-            stripped_text_from_html = _parse_json(json_data, json_filter)
-
-            if ensure_is_ldjson_info_type:
-                # Could sometimes be list, string or something else random
-                if isinstance(json_data, dict):
-                    # If it has LD JSON 'key' @type, and @type is 'product', and something was found for the search
-                    # (Some sites have multiple of the same ld+json @type='product', but some have the review part, some have the 'price' part)
-                    # @type could also be a list although non-standard ("@type": ["Product", "SubType"],)
-                    # LD_JSON auto-extract also requires some content PLUS the ldjson to be present
-                    # 1833 - could be either str or dict, should not be anything else
-
-                    t = json_data.get('@type')
-                    if t and stripped_text_from_html:
-
-                        if isinstance(t, str) and t.lower() == ensure_is_ldjson_info_type.lower():
-                            break
-                        # The non-standard part, some have a list
-                        elif isinstance(t, list):
-                            if ensure_is_ldjson_info_type.lower() in [x.lower().strip() for x in t]:
-                                break
-
-            elif stripped_text_from_html:
-                break
+    if content_start[0] == '{' or content_start[0] == '[':
+        try:
+            # .lstrip("\ufeff") strings ByteOrderMark from UTF8 and still lets the UTF work
+            stripped_text_from_html = _parse_json(json.loads(content.lstrip("\ufeff")), json_filter)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Error processing JSON {content[:20]}...{str(e)})")
+    else:
+        # Probably something else, go fish inside for it
+        try:
+            stripped_text_from_html = extract_json_blob_from_html(content=content,
+                                                                  ensure_is_ldjson_info_type=ensure_is_ldjson_info_type,
+                                                                  json_filter=json_filter                                                                  )
+        except json.JSONDecodeError as e:
+            logger.warning(f"Error processing JSON while extracting JSON from HTML blob {content[:20]}...{str(e)})")
 
     if not stripped_text_from_html:
         # Re 265 - Just return an empty string when filter not found
@@ -378,6 +432,9 @@ def strip_ignore_text(content, wordlist, mode="content"):
     ignored_lines = []
 
     for k in wordlist:
+        # Skip empty strings to avoid matching everything
+        if not k or not k.strip():
+            continue
         # Is it a regex?
         res = re.search(PERL_STYLE_REGEX, k, re.IGNORECASE)
         if res:

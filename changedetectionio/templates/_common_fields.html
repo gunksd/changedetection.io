@@ -33,7 +33,7 @@
                                 <div id="notification-test-log" style="display: none;"><span class="pure-form-message-inline">Processing..</span></div>
                             </div>
                         </div>
-                        <div id="notification-customisation" class="pure-control-group">
+                        <div class="pure-control-group grey-form-border">
                             <div class="pure-control-group">
                                 {{ render_field(form.notification_title, class="m-d notification-title", placeholder=settings_application['notification_title']) }}
                                 <span class="pure-form-message-inline">Title for all notifications</span>
@@ -133,6 +133,12 @@
                                     </p>
                                     <p>
                                         URL encoding, use <strong>|urlencode</strong>, for example - <code>gets://hook-website.com/test.php?title={{ '{{ watch_title|urlencode }}' }}</code>
+                                    </p>
+                                    <p>
+                                        Regular-expression replace, use <strong>|regex_replace</strong>, for example -   <code>{{ "{{ \"hello world 123\" | regex_replace('[0-9]+', 'no-more-numbers') }}" }}</code>
+                                    </p>
+                                    <p>
+                                        For a complete reference of all Jinja2 built-in filters, users can refer to the <a href="https://jinja.palletsprojects.com/en/3.1.x/templates/#builtin-filters">https://jinja.palletsprojects.com/en/3.1.x/templates/#builtin-filters</a>
                                     </p>
                                 </div>
                             </div>
