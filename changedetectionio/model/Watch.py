@@ -1,4 +1,5 @@
 from blinker import signal
+from changedetectionio.validate_url import is_safe_valid_url
 
 from changedetectionio.strtobool import strtobool
 from changedetectionio.jinja2_custom import render as jinja_render
@@ -12,31 +13,11 @@ from .. import jinja2_custom as safe_jinja
 from ..diff import ADDED_PLACEMARKER_OPEN
 from ..html_tools import TRANSLATE_WHITESPACE_TABLE
 
-# Allowable protocols, protects against javascript: etc
-# file:// is further checked by ALLOW_FILE_URI
-SAFE_PROTOCOL_REGEX='^(http|https|ftp|file):'
 FAVICON_RESAVE_THRESHOLD_SECONDS=86400
 
 
 minimum_seconds_recheck_time = int(os.getenv('MINIMUM_SECONDS_RECHECK_TIME', 3))
 mtable = {'seconds': 1, 'minutes': 60, 'hours': 3600, 'days': 86400, 'weeks': 86400 * 7}
-
-
-def is_safe_url(test_url):
-    # See https://github.com/dgtlmoon/changedetection.io/issues/1358
-
-    # Remove 'source:' prefix so we dont get 'source:javascript:' etc
-    # 'source:' is a valid way to tell us to return the source
-
-    r = re.compile(re.escape('source:'), re.IGNORECASE)
-    test_url = r.sub('', test_url)
-
-    pattern = re.compile(os.getenv('SAFE_PROTOCOL_REGEX', SAFE_PROTOCOL_REGEX), re.IGNORECASE)
-    if not pattern.match(test_url.strip()):
-        return False
-
-    return True
-
 
 class model(watch_base):
     __newest_history_key = None
@@ -80,7 +61,7 @@ class model(watch_base):
     def link(self):
 
         url = self.get('url', '')
-        if not is_safe_url(url):
+        if not is_safe_valid_url(url):
             return 'DISABLED'
 
         ready_url = url
@@ -101,7 +82,7 @@ class model(watch_base):
             ready_url=ready_url.replace('source:', '')
 
         # Also double check it after any Jinja2 formatting just incase
-        if not is_safe_url(ready_url):
+        if not is_safe_valid_url(ready_url):
             return 'DISABLED'
         return ready_url
 
@@ -295,9 +276,17 @@ class model(watch_base):
         # When the 'last viewed' timestamp is less than the oldest snapshot, return oldest
         return sorted_keys[-1]
 
-    def get_history_snapshot(self, timestamp):
+    def get_history_snapshot(self, timestamp=None, filepath=None):
+        """
+        Accepts either timestamp or filepath
+        :param timestamp:
+        :param filepath:
+        :return:
+        """
         import brotli
-        filepath = self.history[timestamp]
+
+        if not filepath:
+            filepath = self.history[timestamp]
 
         # See if a brotli versions exists and switch to that
         if not filepath.endswith('.br') and os.path.isfile(f"{filepath}.br"):
@@ -401,7 +390,7 @@ class model(watch_base):
         # Compare each lines (set) against each history text file (set) looking for something new..
         existing_history = set({})
         for k, v in self.history.items():
-            content = self.get_history_snapshot(k)
+            content = self.get_history_snapshot(filepath=v)
 
             if ignore_whitespace:
                 alist = set([line.translate(TRANSLATE_WHITESPACE_TABLE).lower() for line in content.splitlines()])
@@ -658,7 +647,7 @@ class model(watch_base):
         for k, fname in self.history.items():
             if os.path.isfile(fname):
                 if True:
-                    contents = self.get_history_snapshot(k)
+                    contents = self.get_history_snapshot(timestamp=k)
                     res = re.findall(regex, contents, re.MULTILINE)
                     if res:
                         if not csv_writer:
@@ -751,7 +740,7 @@ class model(watch_base):
             # If a previous attempt doesnt yet exist, just snarf the previous snapshot instead
             dates = list(self.history.keys())
             if len(dates):
-                return self.get_history_snapshot(dates[-1])
+                return self.get_history_snapshot(timestamp=dates[-1])
             else:
                 return ''
 

@@ -2,7 +2,7 @@ from flask import Blueprint, request, make_response
 import random
 from loguru import logger
 
-from changedetectionio.notification_service import NotificationContextData
+from changedetectionio.notification_service import NotificationContextData, set_basic_notification_vars
 from changedetectionio.store import ChangeDetectionStore
 from changedetectionio.auth_decorator import login_optionally_required
 
@@ -39,11 +39,7 @@ def construct_blueprint(datastore: ChangeDetectionStore):
             return make_response("Error: You must have atleast one watch configured for 'test notification' to work", 400)
 
         watch = datastore.data['watching'].get(watch_uuid)
-
-        notification_urls = None
-
-        if request.form.get('notification_urls'):
-            notification_urls = request.form['notification_urls'].strip().splitlines()
+        notification_urls = request.form.get('notification_urls','').strip().splitlines()
 
         if not notification_urls:
             logger.debug("Test notification - Trying by group/tag in the edit form if available")
@@ -81,6 +77,8 @@ def construct_blueprint(datastore: ChangeDetectionStore):
             # Only use if present, if not set in n_object it should use the default system value
             if 'notification_format' in request.form and request.form['notification_format'].strip():
                 n_object['notification_format'] = request.form.get('notification_format', '').strip()
+            else:
+                n_object['notification_format'] = datastore.data['settings']['application'].get('notification_format')
 
             if 'notification_title' in request.form and request.form['notification_title'].strip():
                 n_object['notification_title'] = request.form.get('notification_title', '').strip()
@@ -97,7 +95,44 @@ def construct_blueprint(datastore: ChangeDetectionStore):
                 n_object['notification_body'] = "Test body"
 
             n_object['as_async'] = False
-            n_object.update(watch.extra_notification_token_values())
+
+            #  Same like in notification service, should be refactored
+            dates = []
+            trigger_text = ''
+            snapshot_contents = ''
+            if watch:
+                watch_history = watch.history
+                dates = list(watch_history.keys())
+                trigger_text = watch.get('trigger_text', [])
+                # Add text that was triggered
+                if len(dates):
+                    snapshot_contents = watch.get_history_snapshot(timestamp=dates[-1])
+                else:
+                    snapshot_contents = "No snapshot/history available, the watch should fetch atleast once."
+
+                if len(trigger_text):
+                    from . import html_tools
+                    triggered_text = html_tools.get_triggered_text(content=snapshot_contents, trigger_text=trigger_text)
+                    if triggered_text:
+                        triggered_text = '\n'.join(triggered_text)
+
+            # Could be called as a 'test notification' with only 1 snapshot available
+            prev_snapshot = "Example text: example test\nExample text: change detection is cool\nExample text: some more examples\n"
+            current_snapshot = "Example text: example test\nExample text: change detection is fantastic\nExample text: even more examples\nExample text: a lot more examples"
+
+
+
+            if len(dates) > 1:
+                prev_snapshot = watch.get_history_snapshot(timestamp=dates[-2])
+                current_snapshot = watch.get_history_snapshot(timestamp=dates[-1])
+
+            n_object.update(set_basic_notification_vars(snapshot_contents=snapshot_contents,
+                                                        current_snapshot=current_snapshot,
+                                                        prev_snapshot=prev_snapshot,
+                                                        watch=watch,
+                                                        triggered_text=trigger_text))
+
+
             sent_obj = process_notification(n_object, datastore)
 
         except Exception as e:

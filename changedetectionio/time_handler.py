@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import arrow
 from enum import IntEnum
 
@@ -11,7 +13,6 @@ class Weekday(IntEnum):
     Friday = 4
     Saturday = 5
     Sunday = 6
-
 
 def am_i_inside_time(
         day_of_week: str,
